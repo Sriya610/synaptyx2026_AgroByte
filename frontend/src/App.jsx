@@ -11,7 +11,7 @@ import {
   Legend,
 } from "chart.js";
 import { Doughnut, Line } from "react-chartjs-2";
-import { fetchLiveData, fetchLocations } from "./api";
+import { fetchLiveData } from "./api";
 import "./App.css";
 
 ChartJS.register(
@@ -30,12 +30,13 @@ const POLL_INTERVAL_MS = 2000;
 const MAPS_API_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY;
 
 function App() {
-  const [selectedLocation, setSelectedLocation] = useState("dynamic-location");
+  const [selectedLocation] = useState("dynamic-location");
   const [searchLocation, setSearchLocation] = useState("");
   const [dynamicLocationName, setDynamicLocationName] = useState("");
   const [selectedCoords, setSelectedCoords] = useState(null);
   const [mapsReady, setMapsReady] = useState(false);
   const [mapsError, setMapsError] = useState("");
+  const [searchStatus, setSearchStatus] = useState("");
   const [liveData, setLiveData] = useState(null);
   const [history, setHistory] = useState([]);
   const [lastUpdated, setLastUpdated] = useState(null);
@@ -45,6 +46,149 @@ function App() {
   const mapRef = useRef(null);
   const circleRef = useRef(null);
   const markerRef = useRef(null);
+
+  const applyResolvedLocation = (location, label, viewport) => {
+    const lat = typeof location.lat === "function" ? location.lat() : location.lat;
+    const lng = typeof location.lng === "function" ? location.lng() : location.lng;
+
+    setSelectedCoords({ lat, lng });
+    setDynamicLocationName(label);
+    setSearchLocation(label);
+
+    if (viewport && mapRef.current) {
+      mapRef.current.fitBounds(viewport);
+      return;
+    }
+
+    if (mapRef.current) {
+      mapRef.current.setCenter({ lat, lng });
+      mapRef.current.setZoom(15);
+    }
+  };
+
+  const geocodeAddress = (address) =>
+    new Promise((resolve) => {
+      if (!address?.trim()) {
+        resolve(null);
+        return;
+      }
+      const geocoder = new window.google.maps.Geocoder();
+      geocoder.geocode({ address: address.trim() }, (results, status) => {
+        if (status === "OK" && results?.[0]?.geometry?.location) {
+          resolve(results[0]);
+          return;
+        }
+        resolve(null);
+      });
+    });
+
+  const findPlaceByQuery = (query) =>
+    new Promise((resolve) => {
+      if (!query?.trim() || !mapRef.current || !window.google.maps.places) {
+        resolve(null);
+        return;
+      }
+      const service = new window.google.maps.places.PlacesService(mapRef.current);
+      service.findPlaceFromQuery(
+        {
+          query: query.trim(),
+          fields: ["formatted_address", "geometry", "name"],
+        },
+        (candidates, status) => {
+          if (status === "OK" && candidates?.[0]?.geometry?.location) {
+            resolve(candidates[0]);
+            return;
+          }
+          resolve(null);
+        },
+      );
+    });
+
+  const findLocationByOpenStreetMap = async (query) => {
+    if (!query?.trim()) {
+      return null;
+    }
+
+    const searchQuery = encodeURIComponent(query.trim());
+    const url = `https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${searchQuery}`;
+
+    try {
+      const response = await fetch(url, {
+        headers: {
+          Accept: "application/json",
+        },
+      });
+
+      if (!response.ok) {
+        return null;
+      }
+
+      const data = await response.json();
+      const first = data?.[0];
+      if (!first?.lat || !first?.lon) {
+        return null;
+      }
+
+      return {
+        lat: Number(first.lat),
+        lng: Number(first.lon),
+        label: first.display_name || query.trim(),
+      };
+    } catch (error) {
+      console.error("OSM lookup failed:", error);
+      return null;
+    }
+  };
+
+  const resolveAndFocusLocation = async (rawQuery) => {
+    const query = (rawQuery || "").trim();
+    if (!mapsReady || !mapRef.current || !query) {
+      return;
+    }
+
+    setSearchStatus("Searching location...");
+    let result = await geocodeAddress(query);
+
+    if (!result && !/\bindia\b/i.test(query)) {
+      result = await geocodeAddress(`${query}, India`);
+    }
+
+    if (result) {
+      applyResolvedLocation(
+        result.geometry.location,
+        result.formatted_address || query,
+        result.geometry.viewport,
+      );
+      setSearchStatus("");
+      return;
+    }
+
+    const placeCandidate = await findPlaceByQuery(query);
+    if (placeCandidate) {
+      applyResolvedLocation(
+        placeCandidate.geometry.location,
+        placeCandidate.formatted_address || placeCandidate.name || query,
+        placeCandidate.geometry.viewport,
+      );
+      setSearchStatus("");
+      return;
+    }
+
+    let osmCandidate = await findLocationByOpenStreetMap(query);
+    if (!osmCandidate && !/\bindia\b/i.test(query)) {
+      osmCandidate = await findLocationByOpenStreetMap(`${query}, India`);
+    }
+    if (osmCandidate) {
+      applyResolvedLocation(
+        { lat: osmCandidate.lat, lng: osmCandidate.lng },
+        osmCandidate.label,
+      );
+      setSearchStatus("");
+      return;
+    }
+
+    setSearchStatus(`No location found for "${query}". Try adding district/state.`);
+  };
 
   useEffect(() => {
     if (!MAPS_API_KEY) {
@@ -88,22 +232,20 @@ function App() {
       if (!event.latLng) {
         return;
       }
-      const lat = event.latLng.lat();
-      const lng = event.latLng.lng();
-      setSelectedCoords({ lat, lng });
+      setSearchStatus("");
 
       const geocoder = new window.google.maps.Geocoder();
+      const lat = event.latLng.lat();
+      const lng = event.latLng.lng();
       geocoder.geocode({ location: { lat, lng } }, (results, status) => {
         if (status === "OK" && results && results.length > 0) {
-          const place = results[0].formatted_address;
-          setDynamicLocationName(place);
-          setSearchLocation(place);
-          if (results[0].geometry.viewport) {
-            mapRef.current.fitBounds(results[0].geometry.viewport);
-          }
+          applyResolvedLocation(
+            results[0].geometry.location,
+            results[0].formatted_address,
+            results[0].geometry.viewport,
+          );
         } else {
-          setDynamicLocationName(`Pinned (${lat.toFixed(4)}, ${lng.toFixed(4)})`);
-          setSearchLocation(`Pinned (${lat.toFixed(4)}, ${lng.toFixed(4)})`);
+          applyResolvedLocation(event.latLng, `Pinned (${lat.toFixed(4)}, ${lng.toFixed(4)})`);
         }
       });
     });
@@ -115,30 +257,23 @@ function App() {
     }
 
     const autocomplete = new window.google.maps.places.Autocomplete(searchInputRef.current, {
-      fields: ["formatted_address", "geometry"],
+      fields: ["formatted_address", "geometry", "name"],
       types: ["geocode"],
     });
 
     autocomplete.addListener("place_changed", () => {
       const place = autocomplete.getPlace();
       if (!place?.geometry?.location) {
+        resolveAndFocusLocation(searchInputRef.current?.value || "");
         return;
       }
-      
-      const lat = place.geometry.location.lat();
-      const lng = place.geometry.location.lng();
-      const address = place.formatted_address || searchInputRef.current.value;
-      
-      setSelectedCoords({ lat, lng });
-      setDynamicLocationName(address);
-      setSearchLocation(address);
 
-      if (place.geometry.viewport) {
-        mapRef.current.fitBounds(place.geometry.viewport);
-      } else {
-        mapRef.current.setCenter(place.geometry.location);
-        mapRef.current.setZoom(15);
-      }
+      setSearchStatus("");
+      applyResolvedLocation(
+        place.geometry.location,
+        place.formatted_address || place.name || searchInputRef.current.value,
+        place.geometry.viewport,
+      );
     });
   }, [mapsReady]);
 
@@ -185,28 +320,7 @@ function App() {
 
   const handleManualSearch = (e) => {
     if (e) e.preventDefault();
-    if (!mapsReady || !searchLocation.trim()) {
-      return;
-    }
-    const geocoder = new window.google.maps.Geocoder();
-    geocoder.geocode({ address: searchLocation.trim() }, (results, status) => {
-      if (status === "OK" && results && results[0]?.geometry?.location) {
-        const lat = results[0].geometry.location.lat();
-        const lng = results[0].geometry.location.lng();
-        const address = results[0].formatted_address || searchLocation.trim();
-        
-        setSelectedCoords({ lat, lng });
-        setDynamicLocationName(address);
-        setSearchLocation(address);
-        
-        if (results[0].geometry.viewport) {
-          mapRef.current.fitBounds(results[0].geometry.viewport);
-        } else {
-          mapRef.current.setCenter({ lat, lng });
-          mapRef.current.setZoom(15);
-        }
-      }
-    });
+    resolveAndFocusLocation(searchLocation);
   };
 
   useEffect(() => {
@@ -435,7 +549,9 @@ function App() {
               </button>
             </form>
           </label>
-          <div className="map-status">{mapsError ? mapsError : "Use search or click map to set location"}</div>
+          <div className="map-status">
+            {mapsError || searchStatus || "Use search or click map to set location"}
+          </div>
           <span className={`pill ${connected ? "online" : "offline"}`}>
             {connected ? "Live Connected" : "Reconnecting..."}
           </span>
