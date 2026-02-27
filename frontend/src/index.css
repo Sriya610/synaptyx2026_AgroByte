@@ -1,43 +1,6 @@
-body {
+html,
+body,
+#root {
   margin: 0;
-  font-family: Arial, sans-serif;
-  background: linear-gradient(to right, #e8f5e9, #ffffff);
-}
-
-.container {
-  text-align: center;
-  padding: 40px;
-}
-
-h1 {
-  color: #2e7d32;
-  font-size: 40px;
-}
-
-.card {
-  background: white;
-  padding: 20px;
-  margin: 20px auto;
-  width: 300px;
-  border-radius: 10px;
-  box-shadow: 0px 4px 12px rgba(0,0,0,0.1);
-}
-
-.csi {
-  background: white;
-  padding: 20px;
-  margin: 20px auto;
-  width: 350px;
-  border-radius: 10px;
-  box-shadow: 0px 4px 12px rgba(0,0,0,0.1);
-}
-
-.alert {
-  background: #c62828;
-  color: white;
-  padding: 15px;
-  width: 400px;
-  margin: 20px auto;
-  border-radius: 8px;
-  font-weight: bold;
+  min-height: 100%;
 }
